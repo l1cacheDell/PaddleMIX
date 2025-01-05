@@ -1945,7 +1945,7 @@ std::vector<paddle::Tensor> ${op_name}_func(
     }
     
     int C = head_dim;
-    int GRID = BLK;
+    int Grid = BLK;
     int bsz = b;
     
     // prepare tensor
@@ -1968,14 +1968,22 @@ std::vector<std::vector<int64_t>> ${op_name}_InferShape(
     
     std::vector<int64_t> out_shape = {BSZ, HEAD_NUM, SEQ_LEN, HEAD_DIM};
     
-    int BLK = 64;
+    std::string func_name("${op_name}");
+    int BLK;
+    if (func_name.find("BLK128") != std::string::npos) {
+        BLK = 128;
+    } else if (func_name.find("BLK64") != std::string::npos) {
+        BLK = 64;
+    } else {
+        throw std::runtime_error("Unsupported BLK");
+    }
     std::vector<int64_t> out2_shape = {BSZ, HEAD_NUM, (SEQ_LEN + BLK - 1) / BLK};
     
     return {out_shape, out2_shape};
 }
 
 std::vector<paddle::DataType> ${op_name}_InferDtype(const paddle::DataType& A_dtype) {
-    return {A_dtype, A_dtype};
+    return {paddle::DataType::INT8, paddle::DataType::FLOAT32};
 }
 
 PD_BUILD_OP(${op_name})
@@ -1987,7 +1995,7 @@ PD_BUILD_OP(${op_name})
 
 @paddle_use_triton(
     custom_op_template=sageattn_per_block_int8_triton_template,
-    key=["1"]
+    key=["L"]
 )
 def sageattn_quant_per_block_int8_kernel(
     Input,
@@ -1998,7 +2006,7 @@ def sageattn_quant_per_block_int8_kernel(
     stride_oz, stride_oh, stride_on,
     stride_sz, stride_sh,
     sm_scale,
-    GRID,                   # grid num, through compiling
+    Grid,                   # grid num, through compiling
     h_attn,                 # grid num, through compiling
     bsz,                    # grid num, through compiling
     C: tl.constexpr,
@@ -2031,7 +2039,7 @@ def sageattn_quant_per_block_int8(Input,
                                 km=None, BLKQ=128, BLKK=64,
                                 sm_scale=None, 
                                 tensor_layout="HND", q_or_k="q"):
-    Output = paddle.to_tensor(paddle.empty(Input.shape, dtype=paddle.int8), place=Input.place)
+    Output = paddle.empty(Input.shape, dtype=paddle.int8)
 
     if km is not None and q_or_k == "k":
         Input = Input - km
@@ -2039,46 +2047,44 @@ def sageattn_quant_per_block_int8(Input,
     if tensor_layout == "HND":
         b, h_attn, seq_len, head_dim = Input.shape
 
-        q_strides: list = Input.strides
-        stride_iz, stride_ih, stride_in = q_strides[0], q_strides[1], q_strides[2]
-        qo_strides: list = Output.strides
-        stride_oz, stride_oh, stride_on = qo_strides[0], qo_strides[1], qo_strides[2]
+        # q_strides: list = Input.strides
+        # there is no stride in static mode, so we need to compute it manually
+        stride_iz, stride_ih, stride_in = head_dim * seq_len * h_attn, head_dim * seq_len, head_dim * 1
+        stride_oz, stride_oh, stride_on = head_dim * seq_len * h_attn, head_dim * seq_len, head_dim * 1
     elif tensor_layout == "NHD":
         b, seq_len, h_attn, head_dim = Input.shape
         
-        q_strides: list = Input.strides
-        stride_iz, stride_ih, stride_in = q_strides[0], q_strides[2], q_strides[1]
-        qo_strides: list = Output.strides
-        stride_oz, stride_oh, stride_on = qo_strides[0], qo_strides[2], qo_strides[1]
+        stride_iz, stride_ih, stride_in = head_dim * seq_len * h_attn, head_dim * 1, head_dim * h_attn
+        stride_oz, stride_oh, stride_on = head_dim * seq_len * h_attn, head_dim * 1, head_dim * h_attn,
     else:
         raise ValueError(f"Unknown tensor layout: {tensor_layout}")
 
     BLK = BLKQ if q_or_k == "q" else BLKK
-    Scale = paddle.to_tensor(paddle.empty((b, h_attn, (seq_len + BLK - 1) // BLK), dtype='float32'), place=Input.place)
+    Scale = paddle.empty((b, h_attn, (seq_len + BLK - 1) // BLK), dtype='float32')
 
     if sm_scale is None:
         sm_scale = head_dim**-0.5
 
     L = seq_len
     C = head_dim
-    GRID = BLK
-    sm_scale = sm_scale * 1.44269504 if q_or_k == "q" else 1.0   # avoid doing repeated operation here, we will do in cpp
-    # print(f"Python sm_scale: {sm_scale}")
-    stride_sz = Scale.strides[0]
-    stride_sh = Scale.strides[1]
+    gd = BLK
+    sm_scale = sm_scale * 1.44269504 if q_or_k == "q" else 1.0
+
+    stride_sz = h_attn * ((seq_len + BLK - 1) // BLK)
+    stride_sh =  (seq_len + BLK - 1) // BLK
 
     op_name = "triton_sageattn_quant_per_block"
     op_name += get_dtype_str(Output.dtype)
-    op_name += f"_{BLK}"
+    op_name += f"_BLK{BLK}_seq{seq_len}_h{h_attn}_dim{head_dim}"
     if op_name not in OpProtoHolder.instance().op_proto_map.keys():
-        grid = ("(L + GRID - 1) / GRID", "h_attn", "bsz")
+        grid = ("(L + Grid - 1) / Grid", "h_attn", "bsz")
         sageattn_quant_per_block_int8_kernel[(op_name, grid)](
-            Input, Output, Scale, L,
+            Input, Output, Scale, L, 
             stride_iz, stride_ih, stride_in,
             stride_oz, stride_oh, stride_on,
             stride_sz, stride_sh,
             sm_scale,
-            GRID,       # grid num, through compiling
+            gd,         # grid num, through compiling
             h_attn,     # grid num, through compiling
             b,          # grid num, through compiling
             C, 
@@ -2094,8 +2100,26 @@ def sageattn_quant_per_block_int8(Input,
 
         return outs[0], outs[1]
     else:
-        # assert False, "Not implemented"
-        return Input, Output
+        helper = LayerHelper(op_name, **locals())
+        inputs = {
+            "x": Input,
+            "km@OPTIONAL": km,
+        }
+        out_int8 = helper.create_variable_for_type_inference(dtype=Input.dtype)
+        out_scale = helper.create_variable_for_type_inference(dtype=Input.dtype)
+        
+        helper.append_op(
+            type=op_name,
+            inputs=inputs,
+            attrs={
+                "BLK": BLK,
+                "sm_scale": sm_scale,
+                "tensor_layout": tensor_layout,
+                "q_or_k": q_or_k
+            },
+            outputs={"output_tensor": out_int8, "scale_tensor": out_scale}
+        )
+        return out_int8, out_scale
         
 
 sageattn_sageattn_attn_fwd_casual_false_template = ("""
@@ -2237,7 +2261,7 @@ std::vector<std::vector<int64_t>> ${op_name}_InferShape(
 }
 
 std::vector<paddle::DataType> ${op_name}_InferDtype(const paddle::DataType& A_dtype) {
-    return {A_dtype, A_dtype};
+    return {paddle::DataType::FLOAT16, paddle::DataType::FLOAT32};
 }
 
 PD_BUILD_OP(${op_name})
@@ -2257,14 +2281,13 @@ def sageattn_attn_fwd_casual_false_kernel(
             stride_kz, stride_kh, stride_kn,  
             stride_vz, stride_vh, stride_vn,  
             stride_oz, stride_oh, stride_on,  
-            qo_len, kv_len, 
+            qo_len, kv_len, BSZ,
             H_: tl.constexpr, 
             num_kv_groups: tl.constexpr,
             HEAD_DIM: tl.constexpr,  
             BLOCK_M: tl.constexpr,  
             BLOCK_N: tl.constexpr,  
             STAGE: tl.constexpr,
-            BSZ: tl.constexpr,
             RETURN_LSE: tl.constexpr,):
     start_m = tl.program_id(0)
 
@@ -2339,28 +2362,23 @@ def sageattn_forward_casual_false(q, k, v,
     
     assert output_dtype in ["float16", "bfloat16"]
     
-    Out = paddle.to_tensor(paddle.empty(q.shape, dtype=output_dtype), place=q.place)
-    q_strides = q.strides
-    k_strides = k.strides
-    v_strides = v.strides
-    o_strides = Out.strides
-    
+    Out = paddle.empty(q.shape, dtype=output_dtype)
     if tensor_layout == "HND":
         b, h_qo, qo_len, head_dim = q.shape
         _, h_kv, kv_len, _ = k.shape
 
-        stride_qz, stride_qh, stride_qn = q_strides[0], q_strides[1], q_strides[2]
-        stride_kz, stride_kh, stride_kn = k_strides[0], k_strides[1], k_strides[2]
-        stride_vz, stride_vh, stride_vn = v_strides[0], v_strides[1], v_strides[2]
-        stride_oz, stride_oh, stride_on = o_strides[0], o_strides[1], o_strides[2]
+        stride_qz, stride_qh, stride_qn = h_qo * qo_len * head_dim, qo_len * head_dim, head_dim
+        stride_kz, stride_kh, stride_kn = h_kv * kv_len * head_dim, kv_len * head_dim, head_dim
+        stride_vz, stride_vh, stride_vn = h_kv * kv_len * head_dim, kv_len * head_dim, head_dim
+        stride_oz, stride_oh, stride_on = h_qo * qo_len * head_dim, qo_len * head_dim, head_dim
     elif tensor_layout == "NHD":
         b, qo_len, h_qo, head_dim = q.shape
         _, kv_len, h_kv, _ = k.shape
         
-        stride_qz, stride_qh, stride_qn = q_strides[0], q_strides[2], q_strides[1]
-        stride_kz, stride_kh, stride_kn = k_strides[0], k_strides[2], k_strides[1]
-        stride_vz, stride_vh, stride_vn = v_strides[0], v_strides[2], v_strides[1]
-        stride_oz, stride_oh, stride_on = o_strides[0], o_strides[2], o_strides[1]
+        stride_qz, stride_qh, stride_qn = qo_len * h_qo * head_dim, head_dim, h_qo * head_dim
+        stride_kz, stride_kh, stride_kn = kv_len * h_kv * head_dim, head_dim, h_kv * head_dim
+        stride_vz, stride_vh, stride_vn = kv_len * h_kv * head_dim, head_dim, h_kv * head_dim
+        stride_oz, stride_oh, stride_on = qo_len * h_qo * head_dim, head_dim, h_qo * head_dim
     else:
         raise ValueError(f"Unknown tensor layout: {tensor_layout}")
     
@@ -2369,29 +2387,41 @@ def sageattn_forward_casual_false(q, k, v,
     BSZ = b
     
     if return_lse:
-        Lse = paddle.to_tensor(paddle.empty((b, h_qo, qo_len), dtype=paddle.float32), place=q.place)
+        Lse = paddle.empty((b, h_qo, qo_len), dtype=paddle.float32)
     else:
-        Lse = paddle.to_tensor(paddle.empty((0, 0, 0), dtype=paddle.float32), place=paddle.CPUPlace())
+        Lse = paddle.empty((0, 0, 0), dtype=paddle.float32)
     
     op_name = "triton_sageattn_attn_fwd_casual_false"
     op_name += get_dtype_str(q.dtype)
-    op_name += f"_{BLOCK_M}_{BLOCK_N}"
+    op_name += f"_{BLOCK_M}_{BLOCK_N}_BSZ{BSZ}_seq{qo_len}_h{h_qo}_head{HEAD_DIM_K}"
+    
+    sageattn_attn_fwd_casual_false_config = []
+    if head_dim == 64:
+        sageattn_attn_fwd_casual_false_config.append({
+            "num_warps": 4,
+            "num_stages": 3
+        })
+    else:
+        sageattn_attn_fwd_casual_false_config.append({
+            "num_warps": 8,
+            "num_stages": 4
+        })
+    
     if op_name not in OpProtoHolder.instance().op_proto_map.keys():
         grid = ("(qo_len+BLOCK_M-1)/BLOCK_M", "H_", "BSZ")
-        sageattn_attn_fwd_casual_false_kernel[op_name, grid](
+        sageattn_attn_fwd_casual_false_kernel[(op_name, grid, sageattn_attn_fwd_casual_false_config)](
             q, k, v, q_scale, k_scale, Out, Lse, 
             stride_qz, stride_qh, stride_qn,
             stride_kz, stride_kh, stride_kn,
             stride_vz, stride_vh, stride_vn,
             stride_oz, stride_oh, stride_on,
-            qo_len, kv_len, 
+            qo_len, kv_len, BSZ,
             h_qo, 
             num_kv_groups,
             HEAD_DIM_K,
             BLOCK_M, 
             BLOCK_N, 
             stage,
-            BSZ,
             1 if return_lse else 0
         )
         
@@ -2406,11 +2436,35 @@ def sageattn_forward_casual_false(q, k, v,
 
         return outs[0], outs[1]
     else:
-        # assert False, "Not implemented"
-        return Out, Lse
+        helper = LayerHelper(op_name, **locals())
+        inputs = {
+            "x": q,
+            "k_tensor": k,
+            "v_tensor": v,
+            "q_scale": q_scale,
+            "k_scale": k_scale,
+        }
+        out_tensor = helper.create_variable_for_type_inference(dtype=Out.dtype)
+        out_lse = helper.create_variable_for_type_inference(dtype=Lse.dtype)
+        
+        helper.append_op(
+            type=op_name,
+            inputs=inputs,
+            attrs={
+                "output_type": output_dtype,
+                "tensor_layout": tensor_layout,
+                "return_lse": 1 if return_lse else 0
+            },
+            outputs={
+                "out_tensor": out_tensor,
+                "lse_tensor": out_lse
+            }
+        )
+        
+        return out_tensor, out_lse
 
 
-# sage attention triton API
+# ============== sage attention triton API =================
 def per_block_int8(q, k, km=None, BLKQ=128, BLKK=64, sm_scale=None, 
                    tensor_layout="HND"):
     q_int8, q_scale = sageattn_quant_per_block_int8(
@@ -2429,7 +2483,7 @@ def sageattn_qk_int8_pv_fp16_triton(
     sm_scale: Optional[float] = None,
     smooth_k: bool = True,
     return_lse: bool = False,
-    **kwargs: Any
+    **kwargs
 ) -> paddle.Tensor:
     dtype = q.dtype
     assert dtype in [paddle.float16, paddle.bfloat16], "Input tensors must be in dtype of torch.float16 or torch.bfloat16"
@@ -2449,8 +2503,6 @@ def sageattn_qk_int8_pv_fp16_triton(
     elif head_dim_og > 128:
         raise ValueError(f"Unsupported head_dim: {head_dim_og}")
     
-    assert q.strides[-1] == 1 and k.strides[-1] == 1 and v.strides[-1] == 1, "Last dim of qkv must be contiguous."
-    
     seq_dim = 1 if tensor_layout == "NHD" else 2
     
     if smooth_k:
@@ -2464,7 +2516,7 @@ def sageattn_qk_int8_pv_fp16_triton(
         km = None
         
     if dtype == paddle.bfloat16 or dtype == paddle.float32:
-        v = v.astype(paddle.float16)
+        v = paddle.cast(v, dtype=paddle.float16)
         
     if sm_scale is None:
         sm_scale = 1.0 / (head_dim_og ** 0.5)

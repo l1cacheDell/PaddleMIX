@@ -33,6 +33,12 @@ def parse_args():
         default=False,
         help="If set to True, all optimizations except Triton are enabled.",
     )
+    parser.add_argument(
+        "--static_mode",
+        type=(lambda x: str(x).lower() in ["true", "1", "yes"]),
+        default=False,
+        help="If set to True, build static graph to execute.",
+    )
 
     parser.add_argument("--height", type=int, default=512, help="Height of the generated image.")
     parser.add_argument("--width", type=int, default=512, help="Width of the generated image.")
@@ -86,19 +92,56 @@ import datetime
 
 from ppdiffusers import StableDiffusion3Pipeline
 
+if args.static_mode:
+    import paddlemix
+
+    def scaled_dot_product_attention_(
+            query,
+            key,
+            value,
+            attn_mask=None,  # shape [bs, num_heads, query_len, key_len]
+            dropout_p=0.0,
+            is_causal=False,
+            scale=None,
+            training=True,
+            attention_op=None,
+        ):
+        dim = query.shape[-1]
+        
+        
+        
+        if dim in [64, 128]:
+            o = paddlemix.triton_ops.sageattn_qk_int8_pv_fp16_triton(query, key, value, is_causal=is_causal, sm_scale=scale, tensor_layout="NHD")
+            return o
+        else:
+            output = paddle.nn.functional.scaled_dot_product_attention(
+                query,
+                key,
+                value,
+                attn_mask=None if is_causal else attn_mask,
+                dropout_p=dropout_p if training else 0.0,
+                is_causal=bool(is_causal),
+                training=training,
+            )
+            return output
+        
+
+    paddle.nn.functional.scaled_dot_product_attention_ = scaled_dot_product_attention_
+
 pipe = StableDiffusion3Pipeline.from_pretrained(
     "stabilityai/stable-diffusion-3-medium-diffusers",
     paddle_dtype=inference_dtype,
 )
 
-pipe.transformer = paddle.incubate.jit.inference(
-    pipe.transformer,
-    save_model_dir="./tmp/sd3",
-    enable_new_ir=True,
-    cache_static_model=True,
-    exp_enable_use_cutlass=True,
-    delete_pass_lists=["add_norm_fuse_pass"],
-)
+if args.static_mode:
+    pipe.transformer = paddle.incubate.jit.inference(
+        pipe.transformer,
+        save_model_dir="./tmp/sd3",
+        enable_new_ir=True,
+        cache_static_model=False,
+        exp_enable_use_cutlass=False,
+        delete_pass_lists=["add_norm_fuse_pass"],
+    )
 
 generator = paddle.Generator().manual_seed(42)
 prompt = "A cat holding a sign that says hello world"
