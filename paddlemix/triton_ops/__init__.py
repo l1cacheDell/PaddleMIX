@@ -26,6 +26,7 @@ try:
         weight_only_int8,
         sageattn_quant_per_block_int8,
         sageattn_forward_casual_false,
+        sageattn_forward_casual_true,
         sageattn_qk_int8_pv_fp16_triton
     )
     from .triton_utils import (
@@ -48,6 +49,7 @@ try:
         "triton_split",
         "sageattn_quant_per_block_int8",
         "sageattn_forward_casual_false",
+        "sageattn_forward_casual_true",
         "sageattn_qk_int8_pv_fp16_triton"
     ]
 except:
