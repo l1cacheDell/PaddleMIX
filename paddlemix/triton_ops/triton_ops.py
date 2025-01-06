@@ -2477,7 +2477,6 @@ std::vector<paddle::Tensor> ${op_name}_func(
 ) {
     int BLOCK_M = 128;
     int BLOCK_N = 64;
-    int STAGE = 1;
     
     paddle::DataType output_t;
     if (output_dtype == std::string("float16")) {
@@ -2629,7 +2628,6 @@ def sageattn_attn_fwd_casual_true_kernel(
             HEAD_DIM: tl.constexpr,  
             BLOCK_M: tl.constexpr,  
             BLOCK_N: tl.constexpr,  
-            STAGE: tl.constexpr,
             RETURN_LSE: tl.constexpr,):
     start_m = tl.program_id(0)
 
@@ -2819,7 +2817,6 @@ def sageattn_forward_casual_true(q, k, v,
             HEAD_DIM_K,
             BLOCK_M, 
             BLOCK_N, 
-            stage,
             1 if return_lse else 0
         )
         
@@ -2922,7 +2919,7 @@ def sageattn_qk_int8_pv_fp16_triton(
     q_int8, q_scale, k_int8, k_scale = per_block_int8(q, k, km=km, sm_scale=sm_scale, tensor_layout=tensor_layout)
 
     if is_casual:
-        pass
+        o, lse = sageattn_forward_casual_true(q_int8, k_int8, v, q_scale, k_scale, output_dtype="float16", tensor_layout=tensor_layout, return_lse=return_lse)
     else:
         o, lse = sageattn_forward_casual_false(q_int8, k_int8, v, q_scale, k_scale, output_dtype="float16", tensor_layout=tensor_layout, return_lse=return_lse)
     
