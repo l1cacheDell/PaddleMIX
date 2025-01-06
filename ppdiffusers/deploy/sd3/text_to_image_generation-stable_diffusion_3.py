@@ -39,6 +39,12 @@ def parse_args():
         default=False,
         help="If set to True, build static graph to execute.",
     )
+    parser.add_argument(
+        "--use_sageattn",
+        type=(lambda x: str(x).lower() in ["true", "1", "yes"]),
+        default=False,
+        help="If set to True, use sage attention.",
+    )
 
     parser.add_argument("--height", type=int, default=512, help="Height of the generated image.")
     parser.add_argument("--width", type=int, default=512, help="Width of the generated image.")
@@ -61,6 +67,8 @@ if args.inference_optimize:
     os.environ["INFERENCE_OPTIMIZE_TRITON"] = "True"
     os.environ["INFERENCE_MP_SIZE"] = str(args.mp_size)
     os.environ["INFERENCE_DP_SIZE"] = str(args.dp_size)
+if args.use_sageattn:
+    os.environ["USE_SAGEATTN"] = "True"
 if args.dtype == "float32":
     inference_dtype = paddle.float32
 elif args.dtype == "float16":
@@ -91,42 +99,6 @@ if args.mp_size > 1 or args.dp_size > 1:
 import datetime
 
 from ppdiffusers import StableDiffusion3Pipeline
-
-if args.static_mode:
-    import paddlemix
-
-    def scaled_dot_product_attention_(
-            query,
-            key,
-            value,
-            attn_mask=None,  # shape [bs, num_heads, query_len, key_len]
-            dropout_p=0.0,
-            is_causal=False,
-            scale=None,
-            training=True,
-            attention_op=None,
-        ):
-        dim = query.shape[-1]
-        
-        
-        
-        if dim in [64, 128]:
-            o = paddlemix.triton_ops.sageattn_qk_int8_pv_fp16_triton(query, key, value, is_causal=is_causal, sm_scale=scale, tensor_layout="NHD")
-            return o
-        else:
-            output = paddle.nn.functional.scaled_dot_product_attention(
-                query,
-                key,
-                value,
-                attn_mask=None if is_causal else attn_mask,
-                dropout_p=dropout_p if training else 0.0,
-                is_causal=bool(is_causal),
-                training=training,
-            )
-            return output
-        
-
-    paddle.nn.functional.scaled_dot_product_attention_ = scaled_dot_product_attention_
 
 pipe = StableDiffusion3Pipeline.from_pretrained(
     "stabilityai/stable-diffusion-3-medium-diffusers",
