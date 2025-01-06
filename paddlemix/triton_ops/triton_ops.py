@@ -1995,7 +1995,7 @@ PD_BUILD_OP(${op_name})
 
 @paddle_use_triton(
     custom_op_template=sageattn_per_block_int8_triton_template,
-    key=["L"]
+    key=["1"]
 )
 def sageattn_quant_per_block_int8_kernel(
     Input,
@@ -2023,11 +2023,11 @@ def sageattn_quant_per_block_int8_kernel(
     output_ptrs = Output + off_b * stride_oz + off_h * stride_oh + offs_n[:, None] * stride_on + offs_k[None, :]
     scale_ptrs = Scale + off_b * stride_sz + off_h * stride_sh + off_blk
 
-    x = tl.load(input_ptrs, mask=offs_n[:, None] < L)
-    x = x.to(tl.float32)
-    x *= sm_scale
-    scale = tl.max(tl.abs(x)) / 127.
-    x_int8 = x / scale
+    x_data = tl.load(input_ptrs, mask=offs_n[:, None] < L)
+    x_data = x_data.to(tl.float32)
+    x_data *= sm_scale
+    scale = tl.max(tl.abs(x_data)) / 127.
+    x_int8 = x_data / scale
     x_int8 += 0.5 * tl.where(x_int8 >= 0, 1, -1)
     x_int8 = x_int8.to(tl.int8)
     tl.store(output_ptrs, x_int8, mask=offs_n[:, None] < L)
@@ -2035,24 +2035,23 @@ def sageattn_quant_per_block_int8_kernel(
     
 # note: here we need to do one single operation, instead of fused two.
 # reference: quant_per_block.py
-def sageattn_quant_per_block_int8(Input, 
+def sageattn_quant_per_block_int8(x, 
                                 km=None, BLKQ=128, BLKK=64,
                                 sm_scale=None, 
                                 tensor_layout="HND", q_or_k="q"):
-    Output = paddle.empty(Input.shape, dtype=paddle.int8)
+    Output = paddle.empty(x.shape, dtype=paddle.int8)
 
     if km is not None and q_or_k == "k":
-        Input = Input - km
+        x = x - km
         
     if tensor_layout == "HND":
-        b, h_attn, seq_len, head_dim = Input.shape
+        b, h_attn, seq_len, head_dim = x.shape
 
-        # q_strides: list = Input.strides
         # there is no stride in static mode, so we need to compute it manually
         stride_iz, stride_ih, stride_in = head_dim * seq_len * h_attn, head_dim * seq_len, head_dim * 1
         stride_oz, stride_oh, stride_on = head_dim * seq_len * h_attn, head_dim * seq_len, head_dim * 1
     elif tensor_layout == "NHD":
-        b, seq_len, h_attn, head_dim = Input.shape
+        b, seq_len, h_attn, head_dim = x.shape
         
         stride_iz, stride_ih, stride_in = head_dim * seq_len * h_attn, head_dim * 1, head_dim * h_attn
         stride_oz, stride_oh, stride_on = head_dim * seq_len * h_attn, head_dim * 1, head_dim * h_attn,
@@ -2079,7 +2078,7 @@ def sageattn_quant_per_block_int8(Input,
     if op_name not in OpProtoHolder.instance().op_proto_map.keys():
         grid = ("(L + Grid - 1) / Grid", "h_attn", "bsz")
         sageattn_quant_per_block_int8_kernel[(op_name, grid)](
-            Input, Output, Scale, L, 
+            x, Output, Scale, L, 
             stride_iz, stride_ih, stride_in,
             stride_oz, stride_oh, stride_on,
             stride_sz, stride_sh,
@@ -2094,7 +2093,7 @@ def sageattn_quant_per_block_int8(Input,
     if in_dynamic_or_pir_mode():
         outs = _C_ops._run_custom_op(
             op_name,
-            Input, km, BLK,
+            x, km, BLK,
             sm_scale, tensor_layout, q_or_k
         )
 
@@ -2102,11 +2101,11 @@ def sageattn_quant_per_block_int8(Input,
     else:
         helper = LayerHelper(op_name, **locals())
         inputs = {
-            "x": Input,
+            "x": x,
             "km@OPTIONAL": km,
         }
-        out_int8 = helper.create_variable_for_type_inference(dtype=Input.dtype)
-        out_scale = helper.create_variable_for_type_inference(dtype=Input.dtype)
+        out_int8 = helper.create_variable_for_type_inference(dtype=x.dtype)
+        out_scale = helper.create_variable_for_type_inference(dtype=x.dtype)
         
         helper.append_op(
             type=op_name,
