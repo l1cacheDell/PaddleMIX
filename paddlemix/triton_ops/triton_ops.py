@@ -14,8 +14,6 @@
 
 
 import os
-from matplotlib.streamplot import Grid
-import numpy as np
 
 import paddle
 import triton
@@ -24,7 +22,6 @@ from paddle import _C_ops
 from paddle.base.framework import OpProtoHolder
 from paddle.base.layer_helper import LayerHelper
 from paddle.framework import in_dynamic_or_pir_mode
-from typing import Any, List, Literal, Optional, Tuple, Union
 
 from .triton_utils import (
     get_dtype_str,
