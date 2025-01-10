@@ -211,8 +211,8 @@ def sageattn_quant_per_block_int8(x,
             "x": x,
             "km@OPTIONAL": km,
         }
-        out_int8 = helper.create_variable_for_type_inference(dtype=x.dtype)
-        out_scale = helper.create_variable_for_type_inference(dtype=x.dtype)
+        out_int8 = helper.create_variable_for_type_inference(dtype=paddle.int8)
+        out_scale = helper.create_variable_for_type_inference(dtype=paddle.float32)
         
         helper.append_op(
             type=op_name,
