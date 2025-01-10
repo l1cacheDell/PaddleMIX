@@ -23,9 +23,6 @@ try:
         paddle_use_triton,
         split_concat,
         triton_split,
-        sageattn_quant_per_block_int8,
-        sageattn_forward_casual_false,
-        sageattn_qk_int8_pv_fp16_triton
     )
     from .triton_utils import (
         get_dtype_str,
@@ -33,6 +30,7 @@ try:
         tune_and_invoke_part,
     )
     from .wint8 import weight_only_int8
+    from .sageattn import sageattn_qk_int8_pv_fp16_triton
 
     __all__ += [
         "paddle_custom_op_head_part",
@@ -46,8 +44,6 @@ try:
         "fused_rotary_emb",
         "split_concat",
         "triton_split",
-        "sageattn_quant_per_block_int8",
-        "sageattn_forward_casual_false",
         "sageattn_qk_int8_pv_fp16_triton"
     ]
 except Exception as e:
