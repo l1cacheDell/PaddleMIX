@@ -412,6 +412,12 @@ def rendering_common_template(
         elif type(arg_defaults[i]) == bool:
             input_and_attr += f"bool {arg_names[i]},"
             paddle_attr_sig += f""""{arg_names[i]}: bool","""
+        elif type(arg_defaults[i]) == int:
+            input_and_attr += f"int64_t {arg_names[i]},"
+            paddle_attr_sig += f""""{arg_names[i]}: int64_t","""
+        elif type(arg_defaults[i]) == str:
+            input_and_attr += f"std::string {arg_names[i]},"
+            paddle_attr_sig += f""""{arg_names[i]}: std::string","""
         else:
             input_and_attr += f"const paddle::Tensor & {arg_names[i]},"
             paddle_input_sig += f""""{arg_names[i]}","""

@@ -50,5 +50,6 @@ try:
         "sageattn_forward_casual_false",
         "sageattn_qk_int8_pv_fp16_triton"
     ]
-except:
-    pass
+except Exception as e:
+    print(f"cannot import triton_ops, error: {e}")
+    exit(1)
